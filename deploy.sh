@@ -42,6 +42,7 @@ fi
 # 서버 재시작
 export PYTHONPATH=/workspace/pip_packages:\$PYTHONPATH
 export MINIMAX_REMOVER_ROOT=/workspace/MiniMax-Remover
+cd $REPO_DIR
 nohup /usr/local/bin/python -m uvicorn server:app --host 0.0.0.0 --port 8000 --workers 1 > $SERVER_LOG 2>&1 &
 echo \"✓ 서버 시작 (PID \$!)\"
 sleep 5
