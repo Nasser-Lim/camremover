@@ -1,6 +1,5 @@
 """마스크 전처리, 영상 메타데이터 추출, 청크 분할 모듈."""
 
-import io
 import json
 import logging
 import subprocess
@@ -8,8 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Tuple
 
+import cv2
 import numpy as np
-from PIL import Image
 
 from .config import MaskConfig, VideoConfig
 
@@ -48,111 +47,48 @@ def extract_first_frame(video_path: str) -> np.ndarray:
     영상의 첫 프레임을 추출한다.
 
     Returns:
-        HxWx3 uint8 RGB numpy 배열
+        HxWx3 uint8 BGR numpy 배열
     """
     return extract_frame_at(video_path, 0)
 
 
 def extract_frame_at(video_path: str, frame_idx: int) -> np.ndarray:
     """
-    영상의 특정 프레임을 ffmpeg subprocess로 추출한다.
+    영상의 특정 프레임을 추출한다.
 
     Returns:
-        HxWx3 uint8 RGB numpy 배열
+        HxWx3 uint8 BGR numpy 배열
     """
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-i", video_path,
-        "-vf", f"select=eq(n\\,{frame_idx})",
-        "-vframes", "1",
-        "-f", "image2pipe",
-        "-vcodec", "png",
-        "pipe:1",
-    ]
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            timeout=30,
-        )
-    except FileNotFoundError:
-        raise RuntimeError("ffmpeg를 찾을 수 없습니다. ffmpeg를 설치하세요.")
-    except subprocess.TimeoutExpired:
-        raise ValueError(f"프레임 {frame_idx} 추출 타임아웃: {video_path}")
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise ValueError(f"영상을 열 수 없습니다: {video_path}")
 
-    if result.returncode != 0 or not result.stdout:
+    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+    ret, frame = cap.read()
+    cap.release()
+
+    if not ret or frame is None:
         raise ValueError(f"프레임 {frame_idx}을 읽을 수 없습니다: {video_path}")
 
-    img = Image.open(io.BytesIO(result.stdout)).convert("RGB")
-    return np.array(img)
+    return frame
 
 
 def get_video_info(video_path: str) -> VideoInfo:
-    """영상 메타데이터를 ffprobe로 추출한다."""
-    try:
-        result = subprocess.run(
-            [
-                "ffprobe",
-                "-v", "quiet",
-                "-print_format", "json",
-                "-show_streams",
-                "-show_format",
-                video_path,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        if result.returncode != 0:
-            raise ValueError(f"ffprobe 실패: {result.stderr[:200]}")
+    """영상 메타데이터를 추출한다."""
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise ValueError(f"영상을 열 수 없습니다: {video_path}")
 
-        data = json.loads(result.stdout)
-    except FileNotFoundError:
-        raise RuntimeError("ffprobe를 찾을 수 없습니다. ffmpeg를 설치하세요.")
-    except subprocess.TimeoutExpired:
-        raise ValueError(f"ffprobe 타임아웃: {video_path}")
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
 
-    # 비디오 스트림 찾기
-    video_stream = None
-    has_audio = False
-    for stream in data.get("streams", []):
-        if stream.get("codec_type") == "video" and video_stream is None:
-            video_stream = stream
-        elif stream.get("codec_type") == "audio":
-            has_audio = True
+    duration = total_frames / fps if fps > 0 else 0
 
-    if video_stream is None:
-        raise ValueError(f"비디오 스트림을 찾을 수 없습니다: {video_path}")
-
-    width = int(video_stream.get("width", 0))
-    height = int(video_stream.get("height", 0))
-
-    # fps 파싱 (예: "30000/1001" 또는 "30")
-    fps_str = video_stream.get("r_frame_rate", "30/1")
-    try:
-        if "/" in fps_str:
-            num, den = fps_str.split("/")
-            fps = float(num) / float(den) if float(den) != 0 else 30.0
-        else:
-            fps = float(fps_str)
-    except (ValueError, ZeroDivisionError):
-        fps = 30.0
-
-    # 총 프레임 수
-    nb_frames = video_stream.get("nb_frames")
-    if nb_frames and nb_frames != "N/A":
-        total_frames = int(nb_frames)
-    else:
-        # duration × fps로 추정
-        duration_str = video_stream.get("duration") or data.get("format", {}).get("duration", "0")
-        try:
-            duration = float(duration_str)
-        except (ValueError, TypeError):
-            duration = 0.0
-        total_frames = int(duration * fps) if fps > 0 else 0
-
-    duration = total_frames / fps if fps > 0 else 0.0
+    # ffprobe로 오디오 스트림 존재 여부 확인
+    has_audio = _check_audio_stream(video_path)
 
     return VideoInfo(
         width=width,
@@ -219,39 +155,24 @@ def preprocess_mask(
         raise ValueError(f"지원하지 않는 마스크 형식: shape={raw_mask.shape}")
 
     # 2) 바이너리 변환
-    mask = (mask.astype(np.uint8) > 127).astype(np.uint8) * 255
+    _, mask = cv2.threshold(mask.astype(np.uint8), 127, 255, cv2.THRESH_BINARY)
 
-    # 3) 영상 크기로 리사이즈 (PIL 사용)
+    # 3) 영상 크기로 리사이즈
     target_w, target_h = target_size
     if mask.shape[:2] != (target_h, target_w):
-        pil_mask = Image.fromarray(mask).resize((target_w, target_h), Image.NEAREST)
-        mask = np.array(pil_mask)
+        mask = cv2.resize(
+            mask, (target_w, target_h), interpolation=cv2.INTER_NEAREST
+        )
 
-    # 4) 마스크 팽창 (dilation) — scipy 또는 루프 기반
+    # 4) 마스크 팽창 (dilation)
     if config.dilation_iterations > 0 and config.dilation_kernel_size > 0:
-        mask = _dilate_mask(mask, config.dilation_kernel_size, config.dilation_iterations)
+        kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (config.dilation_kernel_size, config.dilation_kernel_size),
+        )
+        mask = cv2.dilate(mask, kernel, iterations=config.dilation_iterations)
 
     return mask
-
-
-def _dilate_mask(mask: np.ndarray, kernel_size: int, iterations: int) -> np.ndarray:
-    """바이너리 마스크를 팽창한다 (cv2 없이 scipy 또는 PIL 사용)."""
-    try:
-        from scipy.ndimage import binary_dilation
-        struct = np.ones((kernel_size, kernel_size), dtype=bool)
-        dilated = binary_dilation(mask > 0, structure=struct, iterations=iterations)
-        return dilated.astype(np.uint8) * 255
-    except ImportError:
-        pass
-
-    # fallback: PIL expand
-    pil_mask = Image.fromarray(mask)
-    for _ in range(iterations):
-        expanded = pil_mask.filter(
-            __import__("PIL.ImageFilter", fromlist=["MaxFilter"]).MaxFilter(kernel_size)
-        )
-        pil_mask = expanded
-    return np.array(pil_mask)
 
 
 def chunk_video(
@@ -261,10 +182,15 @@ def chunk_video(
     output_dir: str,
 ) -> List[VideoChunk]:
     """
-    영상을 겹치는 청크로 분할한다 (cv2 사용 — Pod/로컬 전용).
-    """
-    import cv2
+    영상을 겹치는 청크로 분할한다.
 
+    stride = chunk_size - overlap
+    예: 250프레임, chunk=80, overlap=10
+      Chunk0: [0, 80)   overlap_start=0,  overlap_end=10
+      Chunk1: [70, 150) overlap_start=10, overlap_end=10
+      Chunk2: [140, 220) overlap_start=10, overlap_end=10
+      Chunk3: [210, 250) overlap_start=10, overlap_end=0
+    """
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise ValueError(f"영상을 열 수 없습니다: {video_path}")
@@ -348,5 +274,7 @@ def chunk_video(
 
 def save_mask_as_png(mask: np.ndarray, output_path: str) -> str:
     """바이너리 마스크를 PNG로 저장한다."""
-    Image.fromarray(mask).save(output_path)
+    cv2.imwrite(output_path, mask)
     return output_path
+
+
