@@ -1,12 +1,8 @@
+# Vercel 배포용 경량 의존성
+# torch, opencv, sam2, lama 없음 — 모든 추론은 RunPod에서 실행
 gradio>=4.44.0
 numpy>=1.24.0
-opencv-python>=4.8.0
 Pillow>=10.0.0
 requests>=2.31.0
 pyyaml>=6.0
 scipy>=1.11.0
-tqdm>=4.66.0
-sam2>=1.0
-torch>=2.3.1
-torchvision>=0.18.1
-simple-lama-inpainting

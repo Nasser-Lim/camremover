@@ -1,0 +1,7 @@
+docker/
+tests/
+requirements-local.txt
+requirements-vercel.txt
+deploy.sh
+RUNPOD_RESTORE.md
+config.yaml
