@@ -46,19 +46,16 @@ class MiniMaxRemoverModel:
 
         self.device = torch.device(device)
 
-        # bfloat16: RTX A5000 완전 지원, float16 cuBLAS GEMM alignment 에러 우회
-        model_dtype = torch.bfloat16
-
         logger.info("Loading VAE...")
         vae = AutoencoderKLWan.from_pretrained(
             os.path.join(weights_dir, "vae"),
-            torch_dtype=model_dtype,
+            torch_dtype=torch.float16,
         )
 
         logger.info("Loading Transformer...")
         transformer = Transformer3DModel.from_pretrained(
             os.path.join(weights_dir, "transformer"),
-            torch_dtype=model_dtype,
+            torch_dtype=torch.float16,
         )
 
         logger.info("Loading Scheduler...")
@@ -189,6 +186,12 @@ async def load_models():
         "WEIGHTS_DIR", "/workspace/weights/minimax-remover"
     )
     device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # float16 cuBLAS GEMM에서 발생하는 CUBLAS_STATUS_INVALID_VALUE 우회
+    # PyTorch 2.x + CUDA 12.x에서 fp16 reduced precision reduction이 alignment 에러를 유발
+    if torch.cuda.is_available():
+        torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
+        logger.info("Disabled fp16 reduced precision reduction for cuBLAS stability")
 
     logger.info("Loading MiniMax-Remover models...")
     model = MiniMaxRemoverModel(weights_dir=weights_dir, device=device)
