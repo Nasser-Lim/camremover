@@ -1,0 +1,36 @@
+# 거치카메라 자동 제거 AI 에이전트 설정
+
+# RunPod 연결 설정
+runpod:
+  pod_id: "jnmahcyvx6omc8"           # RunPod Pod ID (필수)
+  port: 8000                        # FastAPI 서버 포트
+  api_key: ""                       # RunPod API 키 (선택)
+  timeout_seconds: 600              # 청크당 타임아웃 (초)
+  health_check_interval: 5          # 헬스체크 간격 (초)
+
+# 영상 처리 설정
+video:
+  max_inpaint_resolution: 480       # 처리 최대 높이 (px), MiniMax-Remover 학습 해상도
+  chunk_size: 45                    # 청크당 프레임 수 (81이 기본값이나 타임아웃 방지를 위해 단축)
+  chunk_overlap: 9                  # 청크 간 겹침 프레임 수
+  output_codec: "libx264"
+  output_crf: 18                    # 품질 (낮을수록 고품질)
+  output_preset: "medium"
+
+# MiniMax-Remover 파라미터 (Pod로 전송)
+minimax_remover:
+  num_inference_steps: 6            # 디퓨전 스텝 수 (6~12, 높을수록 고품질)
+  seed: 42                          # 재현성용 랜덤 시드
+  mask_dilation: 6                  # 마스크 팽창 반복 횟수
+
+# 마스크 전처리 (로컬)
+mask:
+  dilation_kernel_size: 7           # 마스크 팽창 커널 크기 (px)
+  dilation_iterations: 3            # 팽창 반복 횟수
+  feather_radius: 5                 # 경계 블렌딩 반경 (px)
+
+# CamPatch 설정 (로컬 LaMa 인페인팅)
+campatch:
+  feather_radius: 11                # 패치 경계 페더링 반경 (px), 0=하드 컷
+  rvm_enabled: false                # RVM 피사체 보호 활성화 여부 (Pod 필요)
+  rvm_downsample_ratio: 0.25        # RVM 처리 해상도 비율 (낮을수록 빠름)
