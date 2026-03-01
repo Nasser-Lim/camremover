@@ -203,11 +203,13 @@ async def load_models():
     except Exception as e:
         logger.warning(f"SAM2 load failed (segmentation unavailable): {e}")
 
-    # 워밍업: 작은 더미 추론으로 CUDA 커널 컴파일
+    # 워밍업: 최소 유효 크기(128x128, 4프레임)로 CUDA 커널 컴파일
+    # 실패 시 CUDA 컨텍스트가 오염되므로 모델을 새로 로드해 복구한다
     logger.info("Warming up with dummy inference...")
-    dummy_frames = [np.zeros((64, 64, 3), dtype=np.uint8) for _ in range(4)]
-    dummy_mask = np.zeros((64, 64), dtype=np.uint8)
-    dummy_mask[20:40, 20:40] = 255
+    dummy_h, dummy_w = 128, 128
+    dummy_frames = [np.zeros((dummy_h, dummy_w, 3), dtype=np.uint8) for _ in range(4)]
+    dummy_mask = np.zeros((dummy_h, dummy_w), dtype=np.uint8)
+    dummy_mask[32:96, 32:96] = 255
     try:
         model.inpaint(
             dummy_frames, dummy_mask,
@@ -215,7 +217,18 @@ async def load_models():
         )
         logger.info("Warmup complete.")
     except Exception as e:
-        logger.warning(f"Warmup failed (non-critical): {e}")
+        logger.warning(f"Warmup failed: {e} — reloading model to recover CUDA context")
+        # CUDA 컨텍스트 오염 복구: 모델 삭제 → GC → 캐시 비우기 → 재로드
+        del model
+        model = None
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        try:
+            model = MiniMaxRemoverModel(weights_dir=weights_dir, device=device)
+            logger.info("Model reloaded after warmup failure.")
+        except Exception as e2:
+            logger.error(f"Model reload failed: {e2}")
 
 
 @app.post("/unload_model")
