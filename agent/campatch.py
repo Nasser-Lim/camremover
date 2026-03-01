@@ -136,23 +136,40 @@ def _blend_with_rvm(
     x2 = min(w_full, int(xs.max()) + pad + 1)
     logger.info(f"RVM 크롭 bbox: ({x1},{y1})-({x2},{y2}) / 전체: {w_full}x{h_full}")
 
-    # 2) 크롭 영상 생성
+    # 2) 크롭 영상 생성 (앞에 워밍업 프레임 추가)
+    # RVM은 recurrent 모델이라 초반 프레임에서 배경 학습이 불안정 → 플리커링 발생
+    # 첫 프레임을 N번 반복해서 앞에 붙이면 RVM이 배경을 미리 수렴시킴
+    RVM_WARMUP_FRAMES = 15
     crop_video_path = os.path.join(temp_dir, "crop_input.mp4")
     cap.set(_cv2.CAP_PROP_POS_FRAMES, 0)
     fps = cap.get(_cv2.CAP_PROP_FPS) or 30.0
     cw, ch = x2 - x1, y2 - y1
+
+    # 첫 프레임 읽기 (워밍업용)
+    ret, first_frame = cap.read()
+    if not ret:
+        first_frame = None
+    first_crop = first_frame[y1:y2, x1:x2] if first_frame is not None else None
+    cap.set(_cv2.CAP_PROP_POS_FRAMES, 0)
+
     writer = _cv2.VideoWriter(
         crop_video_path,
         _cv2.VideoWriter_fourcc(*"mp4v"),
         fps,
         (cw, ch),
     )
+    # 워밍업 프레임 삽입
+    if first_crop is not None:
+        for _ in range(RVM_WARMUP_FRAMES):
+            writer.write(first_crop)
+    # 실제 프레임
     while True:
         ret, frame = cap.read()
         if not ret:
             break
         writer.write(frame[y1:y2, x1:x2])
     writer.release()
+    logger.info(f"RVM 크롭 영상 생성: {RVM_WARMUP_FRAMES}개 워밍업 프레임 + 실제 프레임")
 
     # 3) 크롭 배경 이미지 저장
     bg_path = os.path.join(temp_dir, "clean_ref_crop.png")
@@ -172,6 +189,8 @@ def _blend_with_rvm(
     )
     # RVM 사용 후 언로드하고 MiniMax 복원
     client.unload_model("rvm")
+    _report("blending", "MiniMax 모델 복원 중...", percent=27)
+    client.reload_model("minimax")
     client.close()
 
     # 5) 알파 mp4 디코딩
@@ -188,7 +207,11 @@ def _blend_with_rvm(
         gray = _cv2.cvtColor(frame, _cv2.COLOR_BGR2GRAY)
         alpha_frames_raw.append(gray.astype(np.float32) / 255.0)
     alpha_cap.release()
-    logger.info(f"RVM 알파 프레임: {len(alpha_frames_raw)}")
+    logger.info(f"RVM 알파 프레임 (워밍업 포함): {len(alpha_frames_raw)}")
+
+    # 워밍업 프레임 제거 (앞에 붙인 N개)
+    alpha_frames_raw = alpha_frames_raw[RVM_WARMUP_FRAMES:]
+    logger.info(f"RVM 알파 프레임 (워밍업 제거 후): {len(alpha_frames_raw)}")
 
     # 6) 크롭 영역의 feathered_mask / hard_mask
     feathered_crop = feathered_mask[y1:y2, x1:x2]
