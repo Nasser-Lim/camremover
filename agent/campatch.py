@@ -161,6 +161,9 @@ def _blend_with_rvm(
 
         if frame_idx < len(alpha_frames_raw):
             rvm_pha = alpha_frames_raw[frame_idx]  # 전경 확률 [0,1]
+            h, w = frame_bgr.shape[:2]
+            if rvm_pha.shape != (h, w):
+                rvm_pha = _cv2.resize(rvm_pha, (w, h), interpolation=_cv2.INTER_LINEAR)
         else:
             rvm_pha = np.zeros(frame_bgr.shape[:2], dtype=np.float32)
 
