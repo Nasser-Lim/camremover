@@ -40,21 +40,12 @@ REM 나머지 패키지 설치
 echo 나머지 패키지 설치 중...
 pip install gradio numpy opencv-python Pillow requests pyyaml scipy tqdm sam2 simple-lama-inpainting --quiet
 
-REM config.yaml 생성
-if exist config.yaml (
-    echo [스킵] config.yaml 이미 존재합니다.
-) else (
-    copy config.example.yaml config.yaml >nul
-    echo config.yaml 생성됨 — server_url을 채워주세요!
-)
-
 echo.
 echo ============================================
 echo  설치 완료!
 echo ============================================
 echo.
-echo 다음 단계:
-echo   1. config.yaml 을 열어 custom_url 에 서버 주소 입력
-echo   2. run.bat 실행
+echo run.bat 을 실행하세요.
+echo 앱 실행 후 상단 "RunPod 연결 설정"에서 서버 주소를 입력하면 됩니다.
 echo.
 pause

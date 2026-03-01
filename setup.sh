@@ -39,20 +39,11 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu -
 echo "나머지 패키지 설치 중..."
 pip install gradio numpy opencv-python Pillow requests pyyaml scipy tqdm sam2 simple-lama-inpainting --quiet
 
-# config.yaml 생성
-if [ -f "config.yaml" ]; then
-    echo "[스킵] config.yaml 이미 존재합니다."
-else
-    cp config.example.yaml config.yaml
-    echo "config.yaml 생성됨 — server_url을 채워주세요!"
-fi
-
 echo
 echo "============================================"
 echo " 설치 완료!"
 echo "============================================"
 echo
-echo "다음 단계:"
-echo "  1. config.yaml 을 열어 custom_url 에 서버 주소 입력"
-echo "  2. ./run.sh 실행"
+echo "./run.sh 를 실행하세요."
+echo "앱 실행 후 상단 'RunPod 연결 설정'에서 서버 주소를 입력하면 됩니다."
 echo

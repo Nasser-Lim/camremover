@@ -193,14 +193,9 @@ bash setup.sh
 
 가상환경(`.venv`) 생성 후 필요한 패키지를 자동 설치한다.
 
-### 설정
+### 설정 (선택)
 
-설치 후 생성된 `config.yaml`에서 `custom_url`을 채운다:
-
-```yaml
-runpod:
-  custom_url: "https://공유받은-서버-주소"
-```
+`config.yaml`에서 서버 URL을 미리 설정해둘 수 있지만, **앱 실행 후 UI 상단 "RunPod 연결 설정"에서 직접 입력해도 됩니다.**
 
 ### 실행
 
