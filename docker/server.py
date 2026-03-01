@@ -166,6 +166,8 @@ def _get_rvm_model(device: str = "cuda"):
     """RobustVideoMatting 모델을 lazy loading한다 (torch.hub 사용)."""
     global _rvm_model
     if _rvm_model is None:
+        # torch.hub 캐시를 Network Volume에 저장해 Pod 재시작 시에도 유지
+        os.environ.setdefault("TORCH_HOME", "/workspace/torch_cache")
         logger.info("Loading RVM model via torch.hub...")
         _rvm_model = torch.hub.load(
             "PeterL1n/RobustVideoMatting",

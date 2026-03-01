@@ -42,6 +42,7 @@ fi
 # 서버 재시작
 export PYTHONPATH=/workspace/pip_packages:\$PYTHONPATH
 export MINIMAX_REMOVER_ROOT=/workspace/MiniMax-Remover
+export TORCH_HOME=/workspace/torch_cache
 cp $REPO_DIR/docker/server.py $REPO_DIR/server.py
 cd $REPO_DIR
 nohup /usr/local/bin/python -m uvicorn server:app --host 0.0.0.0 --port 8000 --workers 1 > $SERVER_LOG 2>&1 &
