@@ -100,37 +100,82 @@ def _blend_with_rvm(
     temp_dir: str,
 ) -> list:
     """
-    RVM으로 알파 마스크를 추출하고, 클린 레퍼런스 + 원본 프레임을 합성한다.
+    RVM으로 마스크 영역 내 피사체 알파를 추출하고 합성한다.
 
-    합성 공식:
-      result = clean_ref × (1 - pha_combined) + original × pha_combined
+    전략:
+      - 마스크 bbox 크롭 영상만 Pod에 전송 (전체 화면 불필요)
+      - RVM 알파를 마스크 영역에만 적용
+      - 마스크 밖은 원본 그대로 유지
 
-    여기서 pha_combined = max(feathered_mask 내 강제 블렌딩, RVM_pha 보호 영역)
-
-    즉:
-      - 마스크 영역: clean_ref로 완전 교체 (pha_combined = feathered_mask)
-      - 마스크 바깥 피사체: original 유지 (RVM pha가 높은 곳)
+    합성 공식 (마스크 bbox 내부):
+      result = original × rvm_pha + clean_ref × (1 - rvm_pha)
+      단, 마스크 완전 내부는 feathered_mask 비율로 clean_ref 보장
     """
     import cv2 as _cv2
 
-    # 1) 배경 이미지를 임시 파일로 저장
-    bg_path = os.path.join(temp_dir, "clean_ref_bg.png")
-    bg_rgb = _cv2.cvtColor(clean_ref_bgr, _cv2.COLOR_BGR2RGB)
-    from PIL import Image as _Img
-    _Img.fromarray(bg_rgb).save(bg_path)
+    # 1) 마스크 bbox 계산 (RVM 크롭 범위)
+    hard_mask = (feathered_mask > 0.01).astype(np.uint8)
+    ys, xs = np.where(hard_mask)
+    if len(ys) == 0:
+        # 마스크 없음 — 단순 blend_patch와 동일
+        cap.set(_cv2.CAP_PROP_POS_FRAMES, 0)
+        blended_frames = []
+        while True:
+            ret, frame_bgr = cap.read()
+            if not ret:
+                break
+            blended_frames.append(blend_patch(frame_bgr, clean_ref_bgr, feathered_mask))
+        cap.release()
+        return blended_frames
 
-    # 2) Pod에 RVM 요청
+    pad = 32  # 경계 여유
+    h_full, w_full = feathered_mask.shape
+    y1 = max(0, int(ys.min()) - pad)
+    y2 = min(h_full, int(ys.max()) + pad + 1)
+    x1 = max(0, int(xs.min()) - pad)
+    x2 = min(w_full, int(xs.max()) + pad + 1)
+    logger.info(f"RVM 크롭 bbox: ({x1},{y1})-({x2},{y2}) / 전체: {w_full}x{h_full}")
+
+    # 2) 크롭 영상 생성
+    crop_video_path = os.path.join(temp_dir, "crop_input.mp4")
+    cap.set(_cv2.CAP_PROP_POS_FRAMES, 0)
+    fps = cap.get(_cv2.CAP_PROP_FPS) or 30.0
+    cw, ch = x2 - x1, y2 - y1
+    writer = _cv2.VideoWriter(
+        crop_video_path,
+        _cv2.VideoWriter_fourcc(*"mp4v"),
+        fps,
+        (cw, ch),
+    )
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        writer.write(frame[y1:y2, x1:x2])
+    writer.release()
+
+    # 3) 크롭 배경 이미지 저장
+    bg_path = os.path.join(temp_dir, "clean_ref_crop.png")
+    crop_ref = clean_ref_bgr[y1:y2, x1:x2]
+    from PIL import Image as _Img
+    _Img.fromarray(_cv2.cvtColor(crop_ref, _cv2.COLOR_BGR2RGB)).save(bg_path)
+
+    # 4) Pod에 크롭 영상으로 RVM 요청 (MiniMax 언로드 → RVM → MiniMax 재로드)
     client = RunPodClient(config.runpod)
-    _report("blending", "RVM 알파 추출 중 (Pod 연결)...", percent=26)
+    _report("blending", "GPU 메모리 정리 중...", percent=25)
+    client.unload_model("minimax")
+    _report("blending", "RVM 알파 추출 중 (마스크 영역)...", percent=26)
     alpha_mp4_bytes = client.rvm_matting(
-        video_path=video_path,
+        video_path=crop_video_path,
         background_path=bg_path,
         downsample_ratio=config.campatch.rvm_downsample_ratio,
     )
+    # RVM 사용 후 언로드하고 MiniMax 복원
+    client.unload_model("rvm")
     client.close()
 
-    # 3) 알파 mp4 디코딩
-    alpha_tmp = os.path.join(temp_dir, "alpha.mp4")
+    # 5) 알파 mp4 디코딩
+    alpha_tmp = os.path.join(temp_dir, "alpha_crop.mp4")
     with open(alpha_tmp, "wb") as f:
         f.write(alpha_mp4_bytes)
 
@@ -140,49 +185,56 @@ def _blend_with_rvm(
         ret, frame = alpha_cap.read()
         if not ret:
             break
-        # BGR→Grayscale (3ch로 인코딩된 알파를 단채널로)
         gray = _cv2.cvtColor(frame, _cv2.COLOR_BGR2GRAY)
         alpha_frames_raw.append(gray.astype(np.float32) / 255.0)
     alpha_cap.release()
-
     logger.info(f"RVM 알파 프레임: {len(alpha_frames_raw)}")
 
-    # 4) 원본 프레임 읽기 + 합성
+    # 6) 크롭 영역의 feathered_mask / hard_mask
+    feathered_crop = feathered_mask[y1:y2, x1:x2]
+    hard_crop = hard_mask[y1:y2, x1:x2].astype(np.float32)
+    clean_ref_crop = clean_ref_bgr[y1:y2, x1:x2]
+
+    # 7) 전체 프레임 읽기 + 합성 (마스크 bbox 영역만 교체)
     cap.set(_cv2.CAP_PROP_POS_FRAMES, 0)
     blended_frames = []
     frame_idx = 0
-
-    hard_mask = (feathered_mask > 0.01).astype(np.float32)  # 마스크 내부
 
     while True:
         ret, frame_bgr = cap.read()
         if not ret:
             break
 
+        result = frame_bgr.copy()
+
+        # 크롭 영역만 RVM 알파 적용
         if frame_idx < len(alpha_frames_raw):
-            rvm_pha = alpha_frames_raw[frame_idx]  # 전경 확률 [0,1]
-            h, w = frame_bgr.shape[:2]
-            if rvm_pha.shape != (h, w):
-                rvm_pha = _cv2.resize(rvm_pha, (w, h), interpolation=_cv2.INTER_LINEAR)
+            rvm_pha = alpha_frames_raw[frame_idx]
+            if rvm_pha.shape != (ch, cw):
+                rvm_pha = _cv2.resize(rvm_pha, (cw, ch), interpolation=_cv2.INTER_LINEAR)
         else:
-            rvm_pha = np.zeros(frame_bgr.shape[:2], dtype=np.float32)
+            rvm_pha = np.zeros((ch, cw), dtype=np.float32)
 
-        # 마스크 내부: clean_ref 강제 사용 (feathered_mask)
-        # 마스크 외부 피사체: original 유지 (rvm_pha * (1 - hard_mask))
-        # pha_combined = 마스크 내부 → feathered_mask 값 (clean_ref 교체)
-        #                마스크 외부 → rvm_pha (피사체 있으면 original 유지)
-        pha_outside = rvm_pha * (1.0 - hard_mask)  # 마스크 밖 RVM 피사체
-        # 최종 alpha: 마스크 안은 feathered_mask(clean_ref 비율), 밖은 0 + pha_outside(original 비율)
-        # → result = clean_ref × (1 - alpha) + original × alpha
-        alpha = feathered_mask * hard_mask + pha_outside
-        alpha = np.clip(alpha, 0.0, 1.0)
+        # keep_original = 1 → 원본 유지, 0 → clean_ref 사용
+        # 마스크 안: clean_ref 사용 (keep=0), 단 RVM 피사체는 원본 유지 (keep=pha)
+        # 마스크 밖: 원본 그대로 (keep=1)
+        keep_inside = rvm_pha * hard_crop  # 마스크 안에서 피사체만 원본
+        keep_outside = 1.0 - hard_crop     # 마스크 밖은 전부 원본
+        keep_original = np.clip(keep_inside + keep_outside, 0.0, 1.0)
 
-        alpha_3d = alpha[:, :, np.newaxis]
-        blended = (
-            clean_ref_bgr.astype(np.float32) * (1.0 - alpha_3d)
-            + frame_bgr.astype(np.float32) * alpha_3d
+        # 페더링 경계: feathered_mask의 그라디언트를 반영
+        # feathered_crop이 0~1 사이인 경계에서 부드럽게 전환
+        keep_original = np.maximum(keep_original, 1.0 - feathered_crop)
+
+        k3 = keep_original[:, :, np.newaxis]
+        orig_crop = frame_bgr[y1:y2, x1:x2].astype(np.float32)
+        blended_crop = (
+            orig_crop * k3
+            + clean_ref_crop.astype(np.float32) * (1.0 - k3)
         )
-        blended_frames.append(np.clip(blended, 0, 255).astype(np.uint8))
+        result[y1:y2, x1:x2] = np.clip(blended_crop, 0, 255).astype(np.uint8)
+
+        blended_frames.append(result)
 
         frame_idx += 1
         if frame_idx % 30 == 0:

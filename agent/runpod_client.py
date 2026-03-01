@@ -149,6 +149,46 @@ class RunPodClient:
             resp.raise_for_status()
         return resp.content
 
+    def unload_model(self, target: str = "all") -> dict:
+        """Pod GPU 메모리를 해제한다.
+
+        Args:
+            target: "minimax" | "rvm" | "sam2" | "all"
+        """
+        try:
+            resp = self.session.post(
+                f"{self.base_url}/unload_model",
+                data={"target": target},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            result = resp.json()
+            logger.info(f"Model unloaded: {result}")
+            return result
+        except Exception as e:
+            logger.warning(f"unload_model 실패 (무시): {e}")
+            return {}
+
+    def reload_model(self, target: str = "minimax") -> dict:
+        """Pod 모델을 다시 로드한다.
+
+        Args:
+            target: "minimax" | "rvm" | "sam2"
+        """
+        try:
+            resp = self.session.post(
+                f"{self.base_url}/reload_model",
+                data={"target": target},
+                timeout=120,
+            )
+            resp.raise_for_status()
+            result = resp.json()
+            logger.info(f"Model reloaded: {result}")
+            return result
+        except Exception as e:
+            logger.warning(f"reload_model 실패 (무시): {e}")
+            return {}
+
     def close(self):
         """HTTP 세션을 닫는다."""
         self.session.close()

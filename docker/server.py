@@ -218,6 +218,85 @@ async def load_models():
         logger.warning(f"Warmup failed (non-critical): {e}")
 
 
+@app.post("/unload_model")
+async def unload_model(target: str = Form("all")):
+    """GPU 메모리를 해제한다.
+
+    Args:
+        target: "minimax" | "rvm" | "sam2" | "all"
+    """
+    global model, _rvm_model, _sam2_predictor, _sam2_image_id
+    unloaded = []
+
+    if target in ("minimax", "all") and model is not None:
+        del model
+        model = None
+        unloaded.append("minimax")
+
+    if target in ("rvm", "all") and _rvm_model is not None:
+        del _rvm_model
+        _rvm_model = None
+        unloaded.append("rvm")
+
+    if target in ("sam2", "all") and _sam2_predictor is not None:
+        del _sam2_predictor
+        _sam2_predictor = None
+        _sam2_image_id = None
+        unloaded.append("sam2")
+
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    mem = {}
+    if torch.cuda.is_available():
+        mem = {
+            "allocated_mb": round(torch.cuda.memory_allocated() / 1024**2, 1),
+            "reserved_mb": round(torch.cuda.memory_reserved() / 1024**2, 1),
+        }
+
+    logger.info(f"Unloaded: {unloaded}, GPU mem: {mem}")
+    return {"unloaded": unloaded, "gpu_memory": mem}
+
+
+@app.post("/reload_model")
+async def reload_model(target: str = Form("minimax")):
+    """모델을 다시 로드한다.
+
+    Args:
+        target: "minimax" | "rvm" | "sam2"
+    """
+    global model
+    loaded = []
+
+    if target == "minimax" and model is None:
+        weights_dir = os.environ.get("WEIGHTS_DIR", "/workspace/weights/minimax-remover")
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        logger.info("Reloading MiniMax-Remover...")
+        model = MiniMaxRemoverModel(weights_dir=weights_dir, device=device)
+        loaded.append("minimax")
+
+    if target == "rvm":
+        _get_rvm_model()
+        loaded.append("rvm")
+
+    if target == "sam2":
+        global _sam2_predictor
+        if _sam2_predictor is None:
+            try:
+                from sam2.sam2_image_predictor import SAM2ImagePredictor
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+                _sam2_predictor = SAM2ImagePredictor.from_pretrained(
+                    "facebook/sam2.1-hiera-tiny", device=device,
+                )
+                loaded.append("sam2")
+            except Exception as e:
+                logger.warning(f"SAM2 reload failed: {e}")
+
+    logger.info(f"Reloaded: {loaded}")
+    return {"loaded": loaded}
+
+
 @app.get("/health")
 async def health_check():
     """서버 상태 확인."""
