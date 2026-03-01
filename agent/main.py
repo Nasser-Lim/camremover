@@ -109,10 +109,6 @@ class CamRemoverAgent:
             if not ready:
                 raise ConnectionError("GPU Pod에 연결할 수 없습니다 (타임아웃)")
 
-            # RVM이 로드되어 있을 수 있으므로 MiniMax 추론 전 GPU 메모리 확보
-            self.client.unload_model("rvm")
-            self.client.reload_model("minimax")
-
             # ── Stage 5: 청크별 인페인팅 ──
             chunk_results = []
             for i, chunk in enumerate(chunks):

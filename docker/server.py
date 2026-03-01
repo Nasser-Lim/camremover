@@ -288,15 +288,9 @@ async def reload_model(target: str = Form("minimax")):
     global model
     loaded = []
 
-    if target == "minimax":
+    if target == "minimax" and model is None:
         weights_dir = os.environ.get("WEIGHTS_DIR", "/workspace/weights/minimax-remover")
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        if model is not None:
-            del model
-            model = None
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
         logger.info("Reloading MiniMax-Remover...")
         model = MiniMaxRemoverModel(weights_dir=weights_dir, device=device)
         loaded.append("minimax")

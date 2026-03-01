@@ -177,20 +177,14 @@ def _blend_with_rvm(
     from PIL import Image as _Img
     _Img.fromarray(_cv2.cvtColor(crop_ref, _cv2.COLOR_BGR2RGB)).save(bg_path)
 
-    # 4) Pod에 크롭 영상으로 RVM 요청 (MiniMax 언로드 → RVM → MiniMax 재로드)
+    # 4) Pod에 크롭 영상으로 RVM 요청
     client = RunPodClient(config.runpod)
-    _report("blending", "GPU 메모리 정리 중...", percent=25)
-    client.unload_model("minimax")
     _report("blending", "RVM 알파 추출 중 (마스크 영역)...", percent=26)
     alpha_mp4_bytes = client.rvm_matting(
         video_path=crop_video_path,
         background_path=bg_path,
         downsample_ratio=config.campatch.rvm_downsample_ratio,
     )
-    # RVM 사용 후 언로드하고 MiniMax 복원
-    client.unload_model("rvm")
-    _report("blending", "MiniMax 모델 복원 중...", percent=27)
-    client.reload_model("minimax")
     client.close()
 
     # 5) 알파 mp4 디코딩
