@@ -396,30 +396,20 @@ async def _do_rvm_matting(
     frames_bgr, fps = _decode_video_bytes(video_bytes)
     h, w = frames_bgr[0].shape[:2]
 
-    # 2) 배경 이미지 디코딩
-    bg_bytes = await background.read()
-    bg_arr = np.frombuffer(bg_bytes, dtype=np.uint8)
-    bg_bgr = cv2.imdecode(bg_arr, cv2.IMREAD_COLOR)
-    if bg_bgr is None:
-        raise HTTPException(status_code=400, detail="배경 이미지를 읽을 수 없습니다")
-    # 배경을 비디오 크기에 맞춤
-    if bg_bgr.shape[:2] != (h, w):
-        bg_bgr = cv2.resize(bg_bgr, (w, h), interpolation=cv2.INTER_AREA)
-    bg_rgb = cv2.cvtColor(bg_bgr, cv2.COLOR_BGR2RGB)
+    # 2) 배경 이미지는 읽기만 하고 버림
+    # torch.hub mobilenetv3는 배경 없이 (src, r1~r4, downsample_ratio) 형태로 호출
+    await background.read()
 
-    # 배경 텐서: (1, 3, H, W) float32 [0,1]
-    bg_tensor = torch.from_numpy(bg_rgb.astype(np.float32) / 255.0).permute(2, 0, 1).unsqueeze(0).to(device)
-
-    # 3) RVM 추론: recurrent state 초기화
-    rec = [None] * 4  # h0, h1, h2, h3
+    # 3) RVM 추론: recurrent state 초기화 (r1, r2, r3, r4)
+    r1, r2, r3, r4 = None, None, None, None
 
     alpha_frames = []
     with torch.no_grad():
         for frame_bgr in frames_bgr:
             frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
             src = torch.from_numpy(frame_rgb.astype(np.float32) / 255.0).permute(2, 0, 1).unsqueeze(0).to(device)
-            # RVM forward: src, bgr, recurrent states, downsample_ratio
-            fgr, pha, *rec = rvm(src, bg_tensor, *rec, downsample_ratio=downsample_ratio)
+            # forward(src, r1, r2, r3, r4, downsample_ratio)
+            fgr, pha, r1, r2, r3, r4 = rvm(src, r1, r2, r3, r4, downsample_ratio=downsample_ratio)
             # pha: (1, 1, H, W) float32 [0,1]
             alpha_np = (pha.squeeze().cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
             alpha_frames.append(alpha_np)
