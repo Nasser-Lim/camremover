@@ -5,7 +5,6 @@ import subprocess
 from pathlib import Path
 from typing import List
 
-import cv2
 import numpy as np
 
 from .config import VideoConfig
@@ -128,6 +127,7 @@ def restore_audio(
 
 def _decode_video(video_path: str) -> List[np.ndarray]:
     """mp4 파일에서 프레임을 읽는다."""
+    import cv2
     cap = cv2.VideoCapture(video_path)
     frames = []
     while True:

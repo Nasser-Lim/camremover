@@ -4,13 +4,14 @@
 카메라/삼각대 등 제거 대상의 정밀 마스크를 생성한다.
 """
 
+import io
 import json
 import logging
 from typing import List, Optional, Tuple
 
-import cv2
 import numpy as np
 import requests
+from PIL import Image, ImageDraw
 
 logger = logging.getLogger("camremover.segmenter")
 
@@ -47,13 +48,13 @@ def segment_from_points(
     if _server_url is None:
         raise RuntimeError("서버 URL이 설정되지 않았습니다. set_server_url()을 먼저 호출하세요.")
 
-    # 이미지를 PNG로 인코딩
-    img_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
-    _, img_png = cv2.imencode(".png", img_bgr)
+    # 이미지를 PNG로 인코딩 (PIL 사용)
+    buf = io.BytesIO()
+    Image.fromarray(image_rgb).save(buf, format="PNG")
 
     # API 호출
     url = f"{_server_url}/segment"
-    files = {"image": ("frame.png", img_png.tobytes(), "image/png")}
+    files = {"image": ("frame.png", buf.getvalue(), "image/png")}
     data = {
         "positive_points": json.dumps([list(p) for p in positive_points]),
         "negative_points": json.dumps([list(p) for p in (negative_points or [])]),
@@ -70,11 +71,9 @@ def segment_from_points(
         logger.error(f"SAM2 server error {resp.status_code}: {detail}")
         raise RuntimeError(f"SAM2 서버 에러 {resp.status_code}: {detail}")
 
-    # PNG 응답 디코딩
-    arr = np.frombuffer(resp.content, dtype=np.uint8)
-    mask = cv2.imdecode(arr, cv2.IMREAD_GRAYSCALE)
-    if mask is None:
-        raise RuntimeError("SAM2 서버 응답에서 마스크를 디코딩할 수 없습니다")
+    # PNG 응답 디코딩 (PIL 사용)
+    mask_img = Image.open(io.BytesIO(resp.content)).convert("L")
+    mask = np.array(mask_img)
 
     logger.info(
         f"SAM2 result: mask shape={mask.shape}, "
@@ -110,14 +109,19 @@ def create_mask_overlay(
             + red.astype(np.float32) * alpha
         ).astype(np.uint8)
 
-    # 포인트 표시
+    # 포인트 표시 (PIL ImageDraw 사용)
+    pil_img = Image.fromarray(overlay)
+    draw = ImageDraw.Draw(pil_img)
+
     for px, py in positive_points:
-        cv2.circle(overlay, (int(px), int(py)), 8, (0, 255, 0), -1)
-        cv2.circle(overlay, (int(px), int(py)), 8, (255, 255, 255), 2)
+        r = 8
+        draw.ellipse([(px - r, py - r), (px + r, py + r)], fill=(0, 255, 0))
+        draw.ellipse([(px - r, py - r), (px + r, py + r)], outline=(255, 255, 255), width=2)
 
     if negative_points:
         for px, py in negative_points:
-            cv2.circle(overlay, (int(px), int(py)), 8, (255, 0, 0), -1)
-            cv2.circle(overlay, (int(px), int(py)), 8, (255, 255, 255), 2)
+            r = 8
+            draw.ellipse([(px - r, py - r), (px + r, py + r)], fill=(255, 0, 0))
+            draw.ellipse([(px - r, py - r), (px + r, py + r)], outline=(255, 255, 255), width=2)
 
-    return overlay
+    return np.array(pil_img)

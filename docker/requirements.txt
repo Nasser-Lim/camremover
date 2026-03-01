@@ -16,3 +16,4 @@ imageio-ffmpeg>=0.4.9
 pyyaml>=6.0
 huggingface_hub>=0.16.0
 RobustVideoMatting
+simple-lama-inpainting

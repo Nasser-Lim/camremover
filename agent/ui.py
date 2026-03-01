@@ -6,7 +6,6 @@ import subprocess
 import tempfile
 from typing import Optional
 
-import cv2
 import gradio as gr
 import numpy as np
 
@@ -512,6 +511,7 @@ def create_ui(config: Optional[AppConfig] = None) -> gr.Blocks:
         def on_campatch_preview(
             video_path, mask_mode_str, sam_mask, editor_value,
             campatch_feather_val, frame_idx, cfg,
+            pod_url, pod_id, pod_port, pod_connected,
         ):
             if video_path is None:
                 return gr.update(visible=False), "오류: 영상이 없습니다"
@@ -523,14 +523,73 @@ def create_ui(config: Optional[AppConfig] = None) -> gr.Blocks:
             if mask_raw is None:
                 return gr.update(visible=False), "오류: 마스크가 없습니다"
 
-            cfg.campatch.feather_radius = int(campatch_feather_val)
-            from .campatch import generate_clean_reference
+            from .preprocessor import preprocess_mask, get_video_info, extract_frame_at
+            import tempfile
+            from PIL import Image
+
             try:
                 video_path = _to_browser_mp4(video_path)
-                ref_img = generate_clean_reference(
-                    video_path, mask_raw, cfg, ref_frame_idx=int(frame_idx)
+                video_info = get_video_info(video_path)
+                mask = preprocess_mask(
+                    mask_raw,
+                    target_size=(video_info.width, video_info.height),
+                    config=cfg.mask,
                 )
+
+                if pod_connected:
+                    # ── RunPod 경로 ──
+                    from .runpod_client import RunPodClient
+
+                    ref_frame_rgb = extract_frame_at(video_path, int(frame_idx))
+                    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp_v:
+                        tmp_v_path = tmp_v.name
+                    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_m:
+                        tmp_m_path = tmp_m.name
+
+                    subprocess.run([
+                        "ffmpeg", "-y",
+                        "-f", "rawvideo", "-vcodec", "rawvideo",
+                        "-s", f"{video_info.width}x{video_info.height}",
+                        "-pix_fmt", "rgb24", "-r", "30",
+                        "-i", "pipe:0",
+                        "-vcodec", "libx264", "-crf", "18", "-preset", "fast",
+                        tmp_v_path,
+                    ], input=ref_frame_rgb.tobytes(), capture_output=True, timeout=30)
+
+                    Image.fromarray(mask).save(tmp_m_path)
+
+                    url_clean = (pod_url or "").strip()
+                    id_clean = (pod_id or "").strip()
+                    cfg.runpod.custom_url = url_clean
+                    cfg.runpod.pod_id = id_clean
+                    cfg.runpod.port = int(pod_port or 8000)
+                    client = RunPodClient(cfg.runpod)
+                    result_bytes = client.campatch(
+                        video_path=tmp_v_path,
+                        mask_path=tmp_m_path,
+                        feather_radius=int(campatch_feather_val),
+                        rvm_enabled=False,
+                    )
+                    client.close()
+
+                    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp_r:
+                        tmp_r.write(result_bytes)
+                        tmp_r_path = tmp_r.name
+                    ref_img = extract_frame_at(tmp_r_path, 0)
+                    os.unlink(tmp_v_path)
+                    os.unlink(tmp_m_path)
+                    os.unlink(tmp_r_path)
+                else:
+                    # ── 로컬 LaMa 경로 ──
+                    from .campatch import generate_clean_reference
+                    cfg.campatch.feather_radius = int(campatch_feather_val)
+                    ref_img = generate_clean_reference(
+                        video_path, mask_raw, cfg, ref_frame_idx=int(frame_idx)
+                    )
+
                 return gr.update(value=ref_img, visible=True), "클린 레퍼런스 생성 완료"
+            except ImportError:
+                return gr.update(visible=False), "오류: 로컬 LaMa 미설치. pip install simple-lama-inpainting torch 또는 RunPod에 연결하세요."
             except Exception as e:
                 logger.exception("클린 레퍼런스 생성 실패")
                 return gr.update(visible=False), f"오류: {e}"
@@ -542,6 +601,8 @@ def create_ui(config: Optional[AppConfig] = None) -> gr.Blocks:
                 state_sam_mask, state_brush_mask,
                 campatch_feather,
                 frame_slider, state_config,
+                pod_url_input, pod_id_input, pod_port_input,
+                state_pod_connected,
             ],
             outputs=[campatch_preview_img, progress_text],
         )
@@ -561,8 +622,7 @@ def create_ui(config: Optional[AppConfig] = None) -> gr.Blocks:
                 video_info = get_video_info(video_path)
                 total = max(video_info.total_frames - 1, 1)
 
-                first_frame = extract_first_frame(video_path)
-                first_frame_rgb = cv2.cvtColor(first_frame, cv2.COLOR_BGR2RGB)
+                first_frame_rgb = extract_first_frame(video_path)
 
                 editor_value = {
                     "background": first_frame_rgb,
@@ -604,8 +664,7 @@ def create_ui(config: Optional[AppConfig] = None) -> gr.Blocks:
                 return gr.update(), gr.update(), None, [], [], None, None
 
             try:
-                frame_bgr = extract_frame_at(video_path, int(frame_idx))
-                frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+                frame_rgb = extract_frame_at(video_path, int(frame_idx))
 
                 editor_value = {
                     "background": frame_rgb,
@@ -808,21 +867,76 @@ def create_ui(config: Optional[AppConfig] = None) -> gr.Blocks:
                 cfg.campatch.feather_radius = int(campatch_feather_val)
                 cfg.campatch.rvm_enabled = bool(campatch_rvm_enabled_val)
                 cfg.campatch.rvm_downsample_ratio = float(campatch_rvm_ratio_val)
-                from .campatch import process_video_campatch
 
-                try:
-                    def progress_cb(p: ProcessingProgress):
-                        progress(p.percent / 100.0, desc=p.message)
+                if pod_connected:
+                    # ── RunPod 경로: Pod에 위임 ──
+                    from .preprocessor import preprocess_mask, get_video_info
+                    from .runpod_client import RunPodClient
+                    from .postprocessor import restore_audio
+                    import tempfile
 
-                    output_path = process_video_campatch(
-                        video_path, mask_raw, cfg,
-                        ref_frame_idx=int(campatch_ref_frame_idx),
-                        progress_callback=progress_cb,
-                    )
-                    return output_path, "CamPatch 처리 완료!"
-                except Exception as e:
-                    logger.exception("CamPatch 처리 실패")
-                    return None, f"오류: {str(e)}"
+                    try:
+                        progress(0.05, desc="마스크 전처리 중...")
+                        video_info = get_video_info(video_path)
+                        mask = preprocess_mask(
+                            mask_raw,
+                            target_size=(video_info.width, video_info.height),
+                            config=cfg.mask,
+                        )
+
+                        mask_tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+                        from PIL import Image as _PIL_Image
+                        _PIL_Image.fromarray(mask).save(mask_tmp.name)
+                        mask_tmp.close()
+
+                        progress(0.15, desc="RunPod CamPatch 처리 중...")
+                        client = RunPodClient(cfg.runpod)
+                        result_bytes = client.campatch(
+                            video_path=video_path,
+                            mask_path=mask_tmp.name,
+                            feather_radius=cfg.campatch.feather_radius,
+                            rvm_enabled=cfg.campatch.rvm_enabled,
+                            rvm_downsample_ratio=cfg.campatch.rvm_downsample_ratio,
+                        )
+                        client.close()
+                        os.unlink(mask_tmp.name)
+
+                        out_dir = tempfile.mkdtemp(prefix="campatch_out_")
+                        merged_path = os.path.join(out_dir, "merged.mp4")
+                        with open(merged_path, "wb") as f:
+                            f.write(result_bytes)
+
+                        progress(0.90, desc="오디오 복원 중...")
+                        if video_info.has_audio:
+                            output_path = os.path.join(out_dir, "output_final.mp4")
+                            restore_audio(video_path, merged_path, output_path, cfg.video)
+                        else:
+                            output_path = merged_path
+
+                        progress(1.0, desc="완료!")
+                        return output_path, "CamPatch 처리 완료! (RunPod)"
+                    except Exception as e:
+                        logger.exception("CamPatch (RunPod) 처리 실패")
+                        return None, f"오류: {str(e)}"
+                else:
+                    # ── 로컬 경로: LaMa 직접 실행 ──
+                    try:
+                        from .campatch import process_video_campatch
+
+                        def progress_cb(p: ProcessingProgress):
+                            progress(p.percent / 100.0, desc=p.message)
+
+                        output_path = process_video_campatch(
+                            video_path, mask_raw, cfg,
+                            ref_frame_idx=int(campatch_ref_frame_idx),
+                            progress_callback=progress_cb,
+                        )
+                        return output_path, "CamPatch 처리 완료! (로컬 LaMa)"
+                    except ImportError:
+                        return None, "오류: 로컬 LaMa 미설치. pip install simple-lama-inpainting torch 또는 RunPod에 연결하세요."
+                    except Exception as e:
+                        logger.exception("CamPatch (로컬) 처리 실패")
+                        return None, f"오류: {str(e)}"
             else:
                 cfg.video.max_inpaint_resolution = int(max_res)
                 cfg.minimax_remover.num_inference_steps = int(num_steps)
@@ -870,10 +984,14 @@ def launch():
     )
     config = load_config()
     app = create_ui(config)
-    print("\n접속 주소: http://127.0.0.1:7860\n")
+
+    # 배포 환경(Vercel/HF Spaces)에서는 0.0.0.0으로 바인딩
+    server_name = os.environ.get("GRADIO_SERVER_NAME", "127.0.0.1")
+    server_port = int(os.environ.get("GRADIO_SERVER_PORT", "7860"))
+    print(f"\n접속 주소: http://{server_name}:{server_port}\n")
     app.launch(
-        server_name="127.0.0.1",
-        server_port=7860,
+        server_name=server_name,
+        server_port=server_port,
         share=False,
         theme=gr.themes.Soft(),
         css=CUSTOM_CSS,

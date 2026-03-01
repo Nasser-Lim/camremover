@@ -149,6 +149,46 @@ class RunPodClient:
             resp.raise_for_status()
         return resp.content
 
+    def campatch(
+        self,
+        video_path: str,
+        mask_path: str,
+        feather_radius: int = 11,
+        rvm_enabled: bool = False,
+        rvm_downsample_ratio: float = 0.25,
+    ) -> bytes:
+        """
+        전체 영상 + 마스크를 Pod로 보내서 CamPatch(LaMa) 처리한다.
+
+        Returns:
+            처리된 mp4 바이트
+        """
+        with open(video_path, "rb") as vf, open(mask_path, "rb") as mf:
+            files = {
+                "video": ("video.mp4", vf, "video/mp4"),
+                "mask": ("mask.png", mf, "image/png"),
+            }
+            data = {
+                "feather_radius": feather_radius,
+                "rvm_enabled": str(rvm_enabled).lower(),
+                "rvm_downsample_ratio": rvm_downsample_ratio,
+            }
+            resp = self.session.post(
+                f"{self.base_url}/campatch",
+                files=files,
+                data=data,
+                timeout=self.config.timeout_seconds,
+            )
+
+        if resp.status_code != 200:
+            try:
+                detail = resp.text[:2000]
+            except Exception:
+                detail = "(응답 본문 읽기 실패)"
+            logger.error(f"CamPatch 에러 {resp.status_code}:\n{detail}")
+            resp.raise_for_status()
+        return resp.content
+
     def unload_model(self, target: str = "all") -> dict:
         """Pod GPU 메모리를 해제한다.
 

@@ -1,11 +1,12 @@
 """
 FastAPI 추론 서버 — RunPod GPU Pod 내부에서 실행.
-MiniMax-Remover (DiT 기반 비디오 인페인팅) + SAM2 (세그멘테이션).
+MiniMax-Remover (DiT 기반 비디오 인페인팅) + SAM2 (세그멘테이션) + CamPatch (LaMa).
 
 엔드포인트:
   GET  /health   — 서버/GPU 상태 확인
   POST /inpaint  — 비디오 청크 + 마스크 → 인페인팅된 mp4
   POST /segment  — 이미지 + 포인트 → 세그멘테이션 마스크 PNG
+  POST /campatch — 전체 영상 + 마스크 → LaMa 패치 블렌딩 mp4
 """
 
 import asyncio
@@ -613,6 +614,215 @@ async def _do_segment(
         content=png_bytes.tobytes(),
         media_type="image/png",
     )
+
+
+# LaMa 모델 싱글톤
+_lama_model = None
+_lama_lock = asyncio.Lock()
+
+
+def _get_lama():
+    """LaMa 모델을 lazy loading한다."""
+    global _lama_model
+    if _lama_model is None:
+        from simple_lama_inpainting import SimpleLama
+        logger.info("Loading LaMa model...")
+        _lama_model = SimpleLama()
+        logger.info("LaMa model loaded.")
+    return _lama_model
+
+
+@app.post("/campatch")
+async def campatch_endpoint(
+    video: UploadFile = File(..., description="입력 영상 (.mp4)"),
+    mask: UploadFile = File(..., description="바이너리 마스크 (.png)"),
+    feather_radius: int = Form(11),
+    rvm_enabled: bool = Form(False),
+    rvm_downsample_ratio: float = Form(0.25),
+):
+    """
+    CamPatch: LaMa로 클린 레퍼런스를 생성하고 전 프레임에 패치 블렌딩한다.
+
+    처리 흐름:
+      1. 첫 프레임 + 마스크로 LaMa 인페인팅 → 클린 레퍼런스
+      2. (rvm_enabled) RVM 알파 추출 후 합성
+      3. 전 프레임에 페더링 블렌딩
+    """
+    async with _lama_lock:
+        try:
+            return await _do_campatch(video, mask, feather_radius, rvm_enabled, rvm_downsample_ratio)
+        except Exception as e:
+            logger.error(f"CamPatch error: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
+
+
+async def _do_campatch(
+    video: UploadFile,
+    mask: UploadFile,
+    feather_radius: int,
+    rvm_enabled: bool,
+    rvm_downsample_ratio: float,
+) -> Response:
+    """CamPatch 핵심 로직."""
+    from PIL import Image as _PIL_Image
+
+    # 1) 영상 디코딩
+    video_bytes = await video.read()
+    frames_bgr, fps = _decode_video_bytes(video_bytes)
+    h, w = frames_bgr[0].shape[:2]
+    total_frames = len(frames_bgr)
+    logger.info(f"CamPatch: {total_frames} frames, {w}x{h}, fps={fps:.1f}")
+
+    # 2) 마스크 디코딩
+    mask_bytes = await mask.read()
+    mask_arr = _decode_mask_bytes(mask_bytes)
+    if mask_arr.shape[:2] != (h, w):
+        mask_arr = cv2.resize(mask_arr, (w, h), interpolation=cv2.INTER_NEAREST)
+
+    # 3) LaMa 인페인팅: 첫 프레임으로 클린 레퍼런스 생성
+    lama = _get_lama()
+    inpaint_radius = max(feather_radius, 5)
+    ksize = inpaint_radius * 2 + 1
+    lama_mask = cv2.dilate(mask_arr, np.ones((ksize, ksize), np.uint8))
+
+    ref_bgr = frames_bgr[0]
+    ref_rgb = cv2.cvtColor(ref_bgr, cv2.COLOR_BGR2RGB)
+    lama_result = np.array(lama(_PIL_Image.fromarray(ref_rgb), _PIL_Image.fromarray(lama_mask)))
+
+    # 확장된 마스크 영역만 LaMa로, 원래 마스크 안만 교체
+    mask_bool = mask_arr > 0
+    extra_bool = (lama_mask > 0) & ~mask_bool
+    clean_ref_rgb = lama_result.copy()
+    clean_ref_rgb[extra_bool] = ref_rgb[extra_bool]
+    clean_ref_bgr = cv2.cvtColor(clean_ref_rgb, cv2.COLOR_RGB2BGR)
+    logger.info("CamPatch: LaMa clean reference generated")
+
+    # 4) 페더링 마스크
+    if feather_radius > 0:
+        ksize_f = feather_radius * 2 + 1
+        feathered = cv2.GaussianBlur(
+            mask_arr.astype(np.float32), (ksize_f, ksize_f), sigmaX=feather_radius / 2
+        ) / 255.0
+    else:
+        feathered = mask_arr.astype(np.float32) / 255.0
+
+    # 5) RVM 합성 or 단순 블렌딩
+    if rvm_enabled:
+        try:
+            blended_frames = _campatch_blend_rvm(
+                frames_bgr, clean_ref_bgr, feathered, mask_arr, rvm_downsample_ratio, fps
+            )
+        except Exception as e:
+            logger.warning(f"RVM failed, falling back to simple blend: {e}")
+            blended_frames = _campatch_simple_blend(frames_bgr, clean_ref_bgr, feathered)
+    else:
+        blended_frames = _campatch_simple_blend(frames_bgr, clean_ref_bgr, feathered)
+
+    logger.info(f"CamPatch: blended {len(blended_frames)} frames")
+
+    # 6) 인코딩
+    result_bytes = _encode_frames_to_mp4(blended_frames, fps)
+    logger.info(f"CamPatch: encoded {len(result_bytes)} bytes")
+
+    return Response(
+        content=result_bytes,
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": "attachment; filename=campatch.mp4"},
+    )
+
+
+def _campatch_simple_blend(
+    frames_bgr: list,
+    clean_ref_bgr: np.ndarray,
+    feathered: np.ndarray,
+) -> list:
+    """단순 페더링 블렌딩."""
+    alpha_3d = feathered[:, :, np.newaxis]
+    result = []
+    for frame in frames_bgr:
+        blended = (
+            frame.astype(np.float32) * (1 - alpha_3d)
+            + clean_ref_bgr.astype(np.float32) * alpha_3d
+        )
+        result.append(np.clip(blended, 0, 255).astype(np.uint8))
+    return result
+
+
+def _campatch_blend_rvm(
+    frames_bgr: list,
+    clean_ref_bgr: np.ndarray,
+    feathered: np.ndarray,
+    hard_mask: np.ndarray,
+    downsample_ratio: float,
+    fps: float,
+) -> list:
+    """RVM 알파 추출 후 마스크 영역 합성."""
+    import tempfile as _tf
+    import torchvision.transforms.functional as TF
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    rvm = _get_rvm_model(device)
+    h_full, w_full = feathered.shape
+
+    # 마스크 bbox (RVM은 크롭 범위만)
+    hard_bin = (hard_mask > 0).astype(np.uint8)
+    ys, xs = np.where(hard_bin)
+    if len(ys) == 0:
+        return _campatch_simple_blend(frames_bgr, clean_ref_bgr, feathered)
+
+    pad = 32
+    y1 = max(0, int(ys.min()) - pad)
+    y2 = min(h_full, int(ys.max()) + pad + 1)
+    x1 = max(0, int(xs.min()) - pad)
+    x2 = min(w_full, int(xs.max()) + pad + 1)
+    cw, ch = x2 - x1, y2 - y1
+
+    RVM_WARMUP = 15
+    r1, r2, r3, r4 = None, None, None, None
+    alpha_frames = []
+
+    with torch.no_grad():
+        # 워밍업: 첫 프레임을 반복
+        first_crop = frames_bgr[0][y1:y2, x1:x2]
+        first_rgb = cv2.cvtColor(first_crop, cv2.COLOR_BGR2RGB)
+        src_warmup = torch.from_numpy(first_rgb.astype(np.float32) / 255.0).permute(2, 0, 1).unsqueeze(0).to(device)
+        for _ in range(RVM_WARMUP):
+            _, _, r1, r2, r3, r4 = rvm(src_warmup, r1, r2, r3, r4, downsample_ratio=downsample_ratio)
+
+        for frame_bgr in frames_bgr:
+            crop = frame_bgr[y1:y2, x1:x2]
+            crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+            src = torch.from_numpy(crop_rgb.astype(np.float32) / 255.0).permute(2, 0, 1).unsqueeze(0).to(device)
+            _, pha, r1, r2, r3, r4 = rvm(src, r1, r2, r3, r4, downsample_ratio=downsample_ratio)
+            alpha_np = (pha.squeeze().cpu().numpy() * 255).clip(0, 255).astype(np.float32) / 255.0
+            alpha_frames.append(alpha_np)
+
+    hard_crop = hard_bin[y1:y2, x1:x2].astype(np.float32)
+    feathered_crop = feathered[y1:y2, x1:x2]
+    clean_ref_crop = clean_ref_bgr[y1:y2, x1:x2]
+
+    result = []
+    for frame_idx, frame_bgr in enumerate(frames_bgr):
+        out = frame_bgr.copy()
+        if frame_idx < len(alpha_frames):
+            rvm_pha = alpha_frames[frame_idx]
+            if rvm_pha.shape != (ch, cw):
+                rvm_pha = cv2.resize(rvm_pha, (cw, ch), interpolation=cv2.INTER_LINEAR)
+        else:
+            rvm_pha = np.zeros((ch, cw), dtype=np.float32)
+
+        keep_inside = rvm_pha * hard_crop
+        keep_outside = 1.0 - hard_crop
+        keep_original = np.clip(keep_inside + keep_outside, 0.0, 1.0)
+        keep_original = np.maximum(keep_original, 1.0 - feathered_crop)
+
+        k3 = keep_original[:, :, np.newaxis]
+        orig_crop = frame_bgr[y1:y2, x1:x2].astype(np.float32)
+        blended_crop = orig_crop * k3 + clean_ref_crop.astype(np.float32) * (1.0 - k3)
+        out[y1:y2, x1:x2] = np.clip(blended_crop, 0, 255).astype(np.uint8)
+        result.append(out)
+
+    return result
 
 
 # ── 유틸리티 함수 ──
