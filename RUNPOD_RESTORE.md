@@ -145,9 +145,52 @@ sleep 25 && tail -20 /tmp/server.log
 
 ---
 
-## server.py 업데이트 (로컬 수정 반영)
+## server.py 업데이트 — GitHub 배포 (권장)
+
+GitHub 레포: `https://github.com/Nasser-Lim/camremover` (private)
+
+### 일상적인 배포 (코드 수정 후)
 
 ```bash
-scp -P <PORT> docker/server.py root@<IP>:/workspace/camremover/server.py
-# 서버 재시작 (위 "서버 재시작" 섹션 참고)
+# 로컬에서 한 명령으로 push + Pod 자동 업데이트
+bash deploy.sh "변경 내용 설명"
 ```
+
+`deploy.sh`가 자동으로 수행하는 작업:
+1. `git add -A && git commit && git push origin master`
+2. Pod SSH 접속 → `git pull origin master`
+3. `docker/server.py` → `/workspace/camremover/server.py` 복사
+4. 기존 uvicorn 프로세스 종료 후 재시작
+
+### 새 Pod에 최초 설정 (Pod 재생성 시)
+
+```bash
+# 1) Pod SSH 접속
+ssh <POD_ID>-<HASH>@ssh.runpod.io -i ~/.ssh/id_ed25519
+
+# 2) GitHub 인증 설정 (최초 1회)
+git config --global credential.helper store
+echo 'https://x-access-token:<GH_TOKEN>@github.com' > ~/.git-credentials
+chmod 600 ~/.git-credentials
+
+# 3) 레포 clone
+cd /workspace
+git clone https://github.com/Nasser-Lim/camremover.git
+```
+
+> **GH_TOKEN**: `gh auth token`으로 로컬에서 확인
+> 이후에는 `bash deploy.sh`만 실행하면 자동 배포됨
+
+### Pod 재시작 후 서버 시작 (deploy.sh 이용)
+
+```bash
+# 변경사항 없어도 서버만 재시작하려면
+bash deploy.sh
+```
+
+> 변경사항이 없으면 커밋은 건너뛰고 Pod pull + 재시작만 수행함
+
+### torch.hub 캐시 (RVM 모델)
+
+RVM(RobustVideoMatting) 모델은 최초 `/rvm_matting` 요청 시 자동 다운로드됨.
+`TORCH_HOME=/workspace/torch_cache`로 설정되어 있으므로 Pod 재시작 후에도 재다운로드 없이 즉시 사용 가능.
