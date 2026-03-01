@@ -8,7 +8,12 @@ Network Volume (camremover-vol, 20GB, EU-SE-1) — ID: opzuu8b9hu
        ├─ MiniMax-Remover/      ← 모델 소스코드
        ├─ weights/minimax-remover/  ← 가중치 (~2.76GB)
        ├─ pip_packages/         ← 모든 pip 패키지 (~2.4GB, sam2 포함)
-       └─ camremover/server.py  ← FastAPI 서버
+       ├─ torch_cache/          ← torch.hub 캐시 (RVM 모델 소스+가중치)
+       └─ camremover/           ← GitHub 레포 clone
+            ├─ docker/server.py ← 소스 (배포 시 server.py로 복사)
+            ├─ server.py        ← uvicorn 실행 대상 (deploy.sh가 복사)
+            ├─ agent/           ← 로컬 UI 코드
+            └─ deploy.sh        ← 배포 스크립트
 ```
 
 - Pod를 삭제해도 Volume의 모든 데이터가 유지됨
@@ -52,17 +57,21 @@ curl -X POST https://api.runpod.io/graphql \
 
 ```bash
 # RunPod SSH 프록시로 접속 (웹 터미널 활성화 필요)
-ssh xaku0flcejqm5v-64410fea@ssh.runpod.io -i ~/.ssh/id_ed25519
+ssh <POD_ID>-<HASH>@ssh.runpod.io -i ~/.ssh/id_ed25519
 
 # [Python 버전 불일치 시] 누락 패키지 보완 설치 (Python 3.12용 빌드)
 pip install safetensors regex tokenizers sentencepiece \
     uvicorn[standard] fastapi python-multipart \
     -q --target /workspace/pip_packages
 
+# docker/server.py → server.py 복사 (GitHub 배포 방식)
+cp /workspace/camremover/docker/server.py /workspace/camremover/server.py
+
 # 서버 시작
 cd /workspace/camremover
 PYTHONPATH=/workspace/pip_packages:$PYTHONPATH \
 MINIMAX_REMOVER_ROOT=/workspace/MiniMax-Remover \
+TORCH_HOME=/workspace/torch_cache \
 nohup /usr/local/bin/python -m uvicorn server:app \
     --host 0.0.0.0 --port 8000 --workers 1 \
     > /tmp/server.log 2>&1 &
@@ -98,18 +107,26 @@ runpod:
 
 시나리오 A의 1단계와 동일.
 
-### 2단계: 로컬에서 setup.sh 전송 후 실행
+### 2단계: GitHub에서 clone 후 setup.sh 실행
 
 ```bash
-# 로컬에서 파일 전송
-scp -P <PORT> docker/server.py docker/setup.sh root@<IP>:/tmp/
-
 # Pod SSH 접속
-ssh -p <PORT> root@<IP>
+ssh <POD_ID>-<HASH>@ssh.runpod.io -i ~/.ssh/id_ed25519
+
+# GitHub 인증 설정 (최초 1회)
+git config --global credential.helper store
+echo 'https://x-access-token:<GH_TOKEN>@github.com' > ~/.git-credentials
+chmod 600 ~/.git-credentials
+
+# 레포 clone
+cd /workspace
+git clone https://github.com/Nasser-Lim/camremover.git
 
 # setup.sh 실행 (소스 clone + 가중치 다운로드 + pip 설치 + 서버 시작)
-bash /tmp/setup.sh
+bash /workspace/camremover/docker/setup.sh
 ```
+
+> `GH_TOKEN`: 로컬에서 `gh auth token`으로 확인
 
 `setup.sh`가 자동으로 수행하는 작업:
 1. apt 패키지 설치 (git, ffmpeg 등)
@@ -125,17 +142,26 @@ bash /tmp/setup.sh
 
 ## 서버 재시작 (필요 시)
 
-```bash
-ssh -p <PORT> root@<IP>
+**로컬에서 deploy.sh 사용 (권장):**
 
-# 기존 프로세스 확인 후 종료
-PID=$(ss -tlnp | grep 8000 | grep -oP "pid=\K[0-9]+")
-kill -9 $PID
+```bash
+bash deploy.sh
+```
+
+**Pod에 직접 접속해서 재시작:**
+
+```bash
+ssh <POD_ID>-<HASH>@ssh.runpod.io -i ~/.ssh/id_ed25519
+
+# 기존 프로세스 종료
+OLD_PID=$(pgrep -f 'uvicorn server:app' | head -1)
+[ -n "$OLD_PID" ] && kill $OLD_PID && sleep 2
 
 # 재시작
 cd /workspace/camremover
 PYTHONPATH=/workspace/pip_packages:$PYTHONPATH \
 MINIMAX_REMOVER_ROOT=/workspace/MiniMax-Remover \
+TORCH_HOME=/workspace/torch_cache \
 nohup /usr/local/bin/python -m uvicorn server:app \
     --host 0.0.0.0 --port 8000 --workers 1 \
     > /tmp/server.log 2>&1 &
