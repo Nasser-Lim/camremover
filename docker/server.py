@@ -46,16 +46,19 @@ class MiniMaxRemoverModel:
 
         self.device = torch.device(device)
 
+        # bfloat16: RTX A5000 완전 지원, float16 cuBLAS GEMM alignment 에러 우회
+        model_dtype = torch.bfloat16
+
         logger.info("Loading VAE...")
         vae = AutoencoderKLWan.from_pretrained(
             os.path.join(weights_dir, "vae"),
-            torch_dtype=torch.float16,
+            torch_dtype=model_dtype,
         )
 
         logger.info("Loading Transformer...")
         transformer = Transformer3DModel.from_pretrained(
             os.path.join(weights_dir, "transformer"),
-            torch_dtype=torch.float16,
+            torch_dtype=model_dtype,
         )
 
         logger.info("Loading Scheduler...")
