@@ -1,0 +1,35 @@
+# 거치카메라 자동 제거 AI - 사용자 설정
+# 이 파일을 config.yaml로 복사한 뒤 server_url을 채워주세요.
+
+# RunPod 서버 연결
+runpod:
+  custom_url: "https://YOUR_POD_ID-8000.proxy.runpod.net"  # ← 공유받은 URL 입력
+  timeout_seconds: 600
+  health_check_interval: 5
+
+# 영상 처리 설정 (기본값 권장)
+video:
+  max_inpaint_resolution: 480
+  chunk_size: 45
+  chunk_overlap: 9
+  output_codec: "libx264"
+  output_crf: 18
+  output_preset: "medium"
+
+# MiniMax-Remover 파라미터
+minimax_remover:
+  num_inference_steps: 6
+  seed: 42
+  mask_dilation: 6
+
+# 마스크 전처리
+mask:
+  dilation_kernel_size: 7
+  dilation_iterations: 3
+  feather_radius: 5
+
+# CamPatch 설정
+campatch:
+  feather_radius: 11
+  rvm_enabled: false
+  rvm_downsample_ratio: 0.25

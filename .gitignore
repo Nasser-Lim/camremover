@@ -23,3 +23,8 @@ weights/
 .vscode/
 .mcp.json
 .claude/
+
+.vercel
+
+# 사용자별 설정 (config.example.yaml은 커밋, config.yaml은 제외)
+config.yaml
