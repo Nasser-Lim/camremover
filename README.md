@@ -174,24 +174,23 @@ Pod 이미지(CUDA 12.9)와 pip_packages의 torch 버전이 다르면 `CUBLAS_ST
 
 ## 로컬 실행
 
-### 사전 요구사항
-
-- **Python 3.10 이상** — https://www.python.org/downloads/
-- **ffmpeg** — https://ffmpeg.org/download.html (PATH에 추가 필요)
-
 ### 설치 (최초 1회)
+
+**Python, ffmpeg 사전 설치 불필요** — 모두 자동으로 설치됩니다.
 
 **Windows:**
 ```
-setup.bat
+install.bat
 ```
 
 **Mac / Linux:**
 ```bash
-bash setup.sh
+bash install.sh
 ```
 
-가상환경(`.venv`) 생성 후 필요한 패키지를 자동 설치한다.
+Miniforge(경량 conda), Python 3.11, 필요 패키지, ffmpeg를 자동 설치한다.
+
+> Python이 이미 설치되어 있다면 `setup.bat` / `setup.sh` 로 가상환경만 구성할 수도 있다.
 
 ### 설정 (선택)
 
