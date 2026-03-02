@@ -129,11 +129,11 @@ def create_ui(config: Optional[AppConfig] = None) -> gr.Blocks:
     except ValueError:
         set_server_url("")
 
-    with gr.Blocks(title="CamRemover") as app:
+    with gr.Blocks(title="SBS Camremover v1.0.0") as app:
 
         # ── 헤더 ──
         gr.HTML(
-            '<div class="main-title"><h1>CamRemover</h1></div>'
+            '<div class="main-title"><h1>SBS Camremover v1.0.0</h1></div>'
             '<div class="main-subtitle">'
             '영상 속 거치카메라 · 삼각대를 AI로 자동 제거합니다.<br>'
             'SAM2 클릭으로 정밀 선택하거나, 브러시로 직접 칠할 수 있습니다.'
@@ -857,6 +857,15 @@ def create_ui(config: Optional[AppConfig] = None) -> gr.Blocks:
                 state_config,
             ],
             outputs=[result_video, progress_text],
+        )
+
+        # ── 푸터 ──
+        gr.HTML(
+            '<div style="text-align:center; margin-top:24px; padding:12px; '
+            'border-top:1px solid #e5e7eb; color:#9ca3af; font-size:12px;">'
+            'SBS Camremover v1.0.0 &nbsp;|&nbsp; 문의: '
+            '<a href="mailto:eight@sbs.co.kr" style="color:#9ca3af;">eight@sbs.co.kr</a>'
+            '</div>'
         )
 
     return app
