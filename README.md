@@ -1,6 +1,6 @@
-# CamRemover
+# SBS CamRemover
 
-고정 거치카메라를 영상에서 자동으로 제거하는 AI 에이전트.
+영상 속 고정 거치카메라 · 삼각대를 AI로 자동 제거하는 에이전트.
 
 두 가지 인페인팅 엔진을 지원한다:
 - **MiniMax-Remover** (GPU 서버): DiT 기반 Diffusion — 고품질, RunPod Pod 필요
@@ -41,7 +41,7 @@ RunPod Pod에서 실행되는 DiT 기반 Diffusion 인페인팅.
     │
 [1] 영상 분석        — 해상도, FPS, 총 프레임 수, 오디오 유무
 [2] 마스크 전처리    — RGBA → 바이너리, 리사이즈, dilation(팽창)
-[3] 청크 분할        — 81프레임씩 11프레임 겹침으로 분할 (마지막 청크 패딩)
+[3] 청크 분할        — 45프레임씩 9프레임 겹침으로 분할 (마지막 청크 패딩)
 [4] Pod 연결 확인    — /health 폴링 (최대 300초)
 [5] 청크별 인페인팅  — 각 청크를 Pod에 전송 → MiniMax-Remover 추론
 [6] 청크 합치기      — 겹침 구간 크로스페이드 블렌딩 (패딩 프레임 제거)
@@ -82,7 +82,7 @@ camremover/
 │   ├── ui.py                   # Gradio 웹 UI (엔진 선택, SAM2 클릭 마스킹)
 │   ├── main.py                 # CamRemoverAgent — MiniMax 파이프라인
 │   ├── campatch.py             # CamPatch 엔진 — LaMa + RVM 블렌딩
-│   ├── segmenter.py            # SAM2 세그멘테이션 (로컬 미리보기용)
+│   ├── segmenter.py            # SAM2 세그멘테이션 (Pod 호출)
 │   ├── config.py               # 설정 로딩 및 검증 (dataclass)
 │   ├── preprocessor.py         # 마스크 전처리, 영상 청크 분할
 │   ├── runpod_client.py        # RunPod Pod HTTP 클라이언트
@@ -97,10 +97,11 @@ camremover/
 │   ├── test_preprocessor.py
 │   └── test_postprocessor.py
 │
+├── install.bat / install.sh    # 원클릭 설치 (Miniforge 기반, 권장)
+├── setup.bat / setup.sh        # 간이 설치 (Python 사전 설치 필요)
+├── run.bat / run.sh            # 실행 스크립트
 ├── config.yaml                 # 전체 설정 파일 (git 제외)
 ├── config.example.yaml         # 배포용 설정 템플릿
-├── setup.bat / setup.sh        # 최초 설치 스크립트
-├── run.bat / run.sh            # 실행 스크립트
 ├── deploy.sh                   # 로컬 → GitHub push + Pod 자동 배포
 ├── requirements.txt            # 로컬용 Python 패키지
 └── RUNPOD_RESTORE.md           # Pod 복원 가이드
@@ -116,11 +117,10 @@ camremover/
 |------|------|
 | UI | Gradio (Blocks API, ImageEditor, gr.File) |
 | 인페인팅 (로컬) | simple-lama-inpainting (LaMa) |
-| 세그멘테이션 | SAM2 (sam2.1-hiera-tiny, HuggingFace 자동 다운로드) |
 | 영상 처리 | OpenCV, FFmpeg |
 | HTTP 통신 | requests (Session, multipart/form-data) |
 | 설정 | PyYAML + Python dataclass |
-| 언어 | Python 3.12 |
+| 언어 | Python 3.11+ |
 
 ### RunPod Pod (GPU 추론)
 
@@ -159,7 +159,7 @@ camremover/
 RVM은 recurrent 모델이라 초반 프레임에서 배경 수렴이 불안정해 플리커링 발생. 첫 프레임을 15번 반복해서 영상 앞에 붙여 RVM을 사전 수렴시키고, 결과에서 해당 프레임을 제거.
 
 ### 4. MiniMax-Remover 청크 처리
-81프레임(모델 학습 프레임 수)씩 나눠서 처리. 마지막 청크가 부족하면 마지막 프레임으로 패딩 후 결과에서 제거. 청크 경계는 11프레임 크로스페이드 블렌딩.
+모델 학습 프레임 수는 81이지만, 타임아웃 방지를 위해 기본 45프레임씩 처리 (config에서 변경 가능). 마지막 청크가 부족하면 마지막 프레임으로 패딩 후 결과에서 제거. 청크 경계는 9프레임 크로스페이드 블렌딩.
 
 ### 5. 해상도 다운스케일 전략
 원본이 `max_inpaint_resolution`(기본 480px 높이)을 초과하면 다운스케일 후 처리 → 업스케일 + 마스크 feather 블렌딩으로 합성.
@@ -172,53 +172,55 @@ Pod 이미지(CUDA 12.9)와 pip_packages의 torch 버전이 다르면 `CUBLAS_ST
 
 ---
 
-## 로컬 실행
+## 설치 및 실행
 
-### 설치 (최초 1회)
+### 사전 요구사항
 
-**Python, ffmpeg 사전 설치 불필요** — 모두 자동으로 설치됩니다.
+없음. `install.bat`이 Python, 패키지, ffmpeg를 모두 자동 설치한다.
 
-**Windows:**
-```
-install.bat
-```
+> Python이 이미 설치되어 있다면 `setup.bat` / `setup.sh` 로 가상환경만 구성할 수도 있다 (ffmpeg는 별도 설치 필요).
 
-**Mac / Linux:**
+### 설치 방법 (Windows)
+
+1. 이 프로젝트를 ZIP으로 다운로드하여 압축을 해제한다.
+2. 압축 해제한 폴더에서 `install.bat`을 **더블클릭**한다.
+3. 설치가 자동으로 진행된다 (최초 1회, 약 5~10분 소요):
+   - Miniforge3 (경량 Python 환경 관리자) 설치
+   - Python 3.11 + 필요 패키지 설치
+   - ffmpeg (영상 처리용) 자동 다운로드
+4. "설치 완료!" 메시지가 나오면 아무 키나 눌러 닫는다.
+
+### 설치 방법 (Mac / Linux)
+
 ```bash
 bash install.sh
 ```
 
-Miniforge(경량 conda), Python 3.11, 필요 패키지, ffmpeg를 자동 설치한다.
-
-> Python이 이미 설치되어 있다면 `setup.bat` / `setup.sh` 로 가상환경만 구성할 수도 있다.
-
-### 설정 (선택)
-
-`config.yaml`에서 서버 URL을 미리 설정해둘 수 있지만, **앱 실행 후 UI 상단 "RunPod 연결 설정"에서 직접 입력해도 됩니다.**
-
 ### 실행
 
-**Windows:**
-```
-run.bat
-```
+**Windows:** `run.bat` 더블클릭
 
-**Mac / Linux:**
-```bash
-bash run.sh
-```
+**Mac / Linux:** `bash run.sh`
 
-브라우저에서 `http://127.0.0.1:7860` 으로 접속.
+실행 후 브라우저에서 `http://127.0.0.1:7860` 으로 접속한다.
+
+### 서버 연결
+
+1. 화면 상단의 **"RunPod 연결 설정"** 을 펼친다.
+2. **서버 URL** 칸에 공유받은 주소를 입력한다 (예: `https://xxxxxx-8000.proxy.runpod.net`).
+3. **"연결 테스트"** 를 클릭하여 "연결됨"을 확인한다.
+
+> 서버 URL은 관리자에게 문의. 서버가 꺼져 있으면 연결되지 않는다.
 
 ### 사용 방법
 
 1. 영상 파일 업로드 (`.mp4` / `.mov` / `.avi`)
 2. 마스크 모드 선택:
-   - **SAM2 클릭**: 첫 프레임에서 카메라를 클릭 → AI가 자동으로 영역 감지
+   - **SAM2 클릭**: 첫 프레임에서 제거할 카메라를 클릭 → AI가 자동으로 영역 감지 (서버 연결 필요)
    - **브러시**: 직접 브러시로 영역을 칠함
 3. 인페인팅 엔진 선택:
-   - **MiniMax-Remover (GPU 서버)**: Pod ID 확인 필요
-   - **CamPatch (로컬)**: Pod 연결 불필요 (RVM만 Pod 사용)
+   - **MiniMax-Remover**: GPU 서버에서 처리. 고품질, 서버 연결 필요
+   - **CamPatch**: 로컬에서 처리. GPU 서버 불필요 (RVM 피사체 보호 시에만 서버 필요)
 4. **처리 시작** 클릭
 5. 완료 후 결과 영상 다운로드
 
@@ -252,7 +254,7 @@ bash run.sh
 | `video` | file | 비디오 청크 (.mp4) |
 | `mask` | file | 바이너리 마스크 (.png) |
 | `max_inpaint_height` | int | 처리 최대 높이 (기본 480) |
-| `num_inference_steps` | int | 디퓨전 추론 스텝 수 (기본 12) |
+| `num_inference_steps` | int | 디퓨전 추론 스텝 수 (기본 6) |
 | `seed` | int | 랜덤 시드 (기본 42) |
 | `mask_dilation` | int | 마스크 팽창 반복 (기본 6) |
 | `feather_px` | int | 경계 블렌딩 반경 (기본 5) |
@@ -301,4 +303,8 @@ pytest tests/ -v
 
 GPU Pod를 새로 생성해야 할 때는 [RUNPOD_RESTORE.md](RUNPOD_RESTORE.md)를 참고한다.
 
+---
 
+## 문의
+
+eight@sbs.co.kr
