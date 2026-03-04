@@ -3,8 +3,8 @@
 영상 속 고정 거치카메라 · 삼각대를 AI로 자동 제거하는 에이전트.
 
 두 가지 인페인팅 엔진을 지원한다:
-- **MiniMax-Remover** (GPU 서버): DiT 기반 Diffusion — 고품질, RunPod Pod 필요
-- **CamPatch** (로컬): LaMa 이미지 인페인팅 + RVM 알파 블렌딩 — 고정 카메라에 완벽한 시간적 일관성, GPU 서버 불필요
+- **MiniMax-Remover** (GPU): DiT 기반 Diffusion — 고품질, RunPod Pod 필요
+- **CamPatch** (로컬): LaMa 이미지 인페인팅 + RVM 알파 블렌딩(GPU) — 고정 카메라에 완벽한 시간적 일관성
 
 ---
 
