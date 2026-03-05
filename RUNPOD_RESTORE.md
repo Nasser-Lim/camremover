@@ -56,8 +56,8 @@ curl -X POST https://api.runpod.io/graphql \
 > 아래 보완 설치 명령어를 먼저 실행할 것.
 
 ```bash
-# RunPod SSH 프록시로 접속 (웹 터미널 활성화 필요)
-ssh <POD_ID>-<HASH>@ssh.runpod.io -i ~/.ssh/id_ed25519
+# 직접 TCP SSH 접속 (portMappings에서 22번 포트 확인)
+ssh -p <TCP_PORT> root@<PUBLIC_IP> -i ~/.ssh/id_ed25519
 
 # [Python 버전 불일치 시] 누락 패키지 보완 설치 (Python 3.12용 빌드)
 pip install safetensors regex tokenizers sentencepiece \
@@ -110,8 +110,8 @@ runpod:
 ### 2단계: GitHub에서 clone 후 setup.sh 실행
 
 ```bash
-# Pod SSH 접속
-ssh <POD_ID>-<HASH>@ssh.runpod.io -i ~/.ssh/id_ed25519
+# 직접 TCP SSH 접속
+ssh -p <TCP_PORT> root@<PUBLIC_IP> -i ~/.ssh/id_ed25519
 
 # GitHub 인증 설정 (최초 1회)
 git config --global credential.helper store
@@ -151,7 +151,7 @@ bash deploy.sh
 **Pod에 직접 접속해서 재시작:**
 
 ```bash
-ssh <POD_ID>-<HASH>@ssh.runpod.io -i ~/.ssh/id_ed25519
+ssh -p <TCP_PORT> root@<PUBLIC_IP> -i ~/.ssh/id_ed25519
 
 # 기존 프로세스 종료
 OLD_PID=$(pgrep -f 'uvicorn server:app' | head -1)
@@ -192,7 +192,7 @@ bash deploy.sh "변경 내용 설명"
 
 ```bash
 # 1) Pod SSH 접속
-ssh <POD_ID>-<HASH>@ssh.runpod.io -i ~/.ssh/id_ed25519
+ssh -p <TCP_PORT> root@<PUBLIC_IP> -i ~/.ssh/id_ed25519
 
 # 2) GitHub 인증 설정 (최초 1회)
 git config --global credential.helper store
@@ -220,3 +220,42 @@ bash deploy.sh
 
 RVM(RobustVideoMatting) 모델은 최초 `/rvm_matting` 요청 시 자동 다운로드됨.
 `TORCH_HOME=/workspace/torch_cache`로 설정되어 있으므로 Pod 재시작 후에도 재다운로드 없이 즉시 사용 가능.
+
+---
+
+## 로컬 Gradio UI 실행
+
+### 전제조건
+
+- Python 3.11+ 설치
+- 의존성 설치: `pip install -r requirements.txt`
+- ffmpeg PATH에 있거나 `tools/ffmpeg/` 아래 위치
+
+### 실행
+
+```bash
+# 프로젝트 루트에서
+python -m agent
+```
+
+접속 주소: `http://127.0.0.1:7860`
+
+### config.yaml 설정
+
+```yaml
+runpod:
+  pod_id: "3ydaps81iyucx1"   # 현재 Pod ID
+```
+
+또는 UI의 **RunPod 연결 설정** 아코디언에서 서버 URL 직접 입력:
+
+```
+https://3ydaps81iyucx1-8000.proxy.runpod.net
+```
+
+### install.bat / run.bat 사용 시 (비기술 사용자)
+
+```bat
+install.bat   ← 최초 1회 (Miniforge + 패키지 + ffmpeg 자동 설치)
+run.bat       ← 이후 매번 실행
+```
